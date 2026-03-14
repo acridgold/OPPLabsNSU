@@ -125,9 +125,6 @@ int main(int argc, char** argv)
         MPI_Recv(local_a.data(), local_size, MPI_INT, 0, 3, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
     }
 
-    // Синхронизируем
-    MPI_Barrier(MPI_COMM_WORLD);
-
     // Начало замера времени
     chrono::high_resolution_clock::time_point start_time, end_time;
     if (rank == 0)
@@ -154,8 +151,6 @@ int main(int argc, char** argv)
     {
         MPI_Send(&local_s, 1, MPI_INT, 0, 4, MPI_COMM_WORLD);
     }
-
-    MPI_Barrier(MPI_COMM_WORLD);
 
     if (rank == 0)
     {

@@ -2,8 +2,6 @@
 #include <iostream>
 #include <fstream>
 #include <vector>
-#include <chrono>
-#include <algorithm>
 
 using namespace std;
 
@@ -111,31 +109,26 @@ int main(int argc, char** argv)
         MPI_COMM_WORLD
     );
 
-    MPI_Barrier(MPI_COMM_WORLD);
-
-    chrono::high_resolution_clock::time_point start_time, end_time;
-
+    // Измерение времени
+    double start_time, end_time;
     if (rank == 0)
     {
-        start_time = chrono::high_resolution_clock::now();
+        start_time = MPI_Wtime();
     }
 
     int local_s = calculate_partial_sum(N, local_a, b);
 
-    // Собираем по потокам
     int global_s = 0;
     MPI_Reduce(&local_s, &global_s, 1, MPI_INT, MPI_SUM, 0, MPI_COMM_WORLD);
 
-    MPI_Barrier(MPI_COMM_WORLD);
-
     if (rank == 0)
     {
-        end_time = chrono::high_resolution_clock::now();
-        chrono::duration<double> total_duration = end_time - start_time;
+        end_time = MPI_Wtime();
+        double total_duration = end_time - start_time;
 
         cout << "\n=== RESULTS ===" << endl;
         cout << "Total sum s = " << global_s << endl;
-        cout << "Total execution time: " << total_duration.count() << " seconds" << endl;
+        cout << "Total execution time: " << total_duration << " seconds" << endl;
         cout << "=================" << endl;
     }
 

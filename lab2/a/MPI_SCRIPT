@@ -1,0 +1,23 @@
+#!/bin/bash
+#PBS -N SLAU_MPI
+#PBS -l nodes=2:ppn=12
+#PBS -l walltime=01:00:00
+#PBS -j oe
+
+cd $PBS_O_WORKDIR
+
+mpiicpc mpi.cpp -o mpi.out
+g++ sequential.cpp -o sequential.out
+
+echo "=== Запуск последовательной версии ==="
+mpirun -np 1 ./sequential.out > sequential.txt
+
+# Просто запускаем уже скомпилированные программы
+for np in 2 4 8 16 24; do
+    echo "=== Запуск на $np процессах ==="
+    if [ $np -le 12 ]; then
+        mpirun -machinefile $PBS_NODEFILE -np $np ./mpi.out > mpi_${np}.txt
+    else
+        mpirun -machinefile $PBS_NODEFILE -np $np -perhost 12 ./mpi.out > mpi_${np}.txt
+    fi
+done

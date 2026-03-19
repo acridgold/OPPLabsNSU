@@ -1,0 +1,6 @@
+#!/bin/bash
+
+cd ../cmake-build-release
+g++ ../a/gen.cpp -o generate
+./generate
+

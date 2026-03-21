@@ -58,9 +58,9 @@ int main(int argc, char** argv)
         double loc_r2 = 0.0;
         for (double val : r_local) loc_r2 += val * val;
         double glob_r2;
-        MPI_Allreduce(&loc_r2, &glob_r2, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        MPI_Allreduce(&loc_r2, &glob_r2, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD); // Собираем для проверки
 
-        if (std::sqrt(glob_r2) / r0_norm < EPS) break;
+        if (std::sqrt(glob_r2) / r0_norm < EPS) break; // Критерий остоновки
 
         // Считаем tau
         for (int i = 0; i < local_N; ++i)

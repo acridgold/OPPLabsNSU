@@ -76,9 +76,18 @@ int main(int argc, char** argv)
             loc_ArAr += Ar_local[i] * Ar_local[i];
         }
 
-        double g_rAr, g_ArAr;
-        MPI_Allreduce(&loc_rAr, &g_rAr, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-        MPI_Allreduce(&loc_ArAr, &g_ArAr, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        // double g_rAr, g_ArAr;
+        //
+        // MPI_Allreduce(&loc_rAr, &g_rAr, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        // MPI_Allreduce(&loc_ArAr, &g_ArAr, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+
+        double loc_data[2] = {loc_rAr, loc_ArAr};
+        double glob_data[2];
+
+        MPI_Allreduce(loc_data, glob_data, 2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+
+        double g_rAr = glob_data[0];
+        double g_ArAr = glob_data[1];
 
         double tau = g_rAr / g_ArAr;
         for (int j = 0; j < N; ++j) x[j] += tau * r_global[j];

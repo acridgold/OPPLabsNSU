@@ -4,8 +4,8 @@
 #include <cmath>
 #include <iomanip>
 
-constexpr int N = 6960;
-constexpr double EPS = 1e-12;
+constexpr int N = 1000;
+constexpr double EPS = 1e-5;
 constexpr int MAX_ITER = 10000;
 
 int main(int argc, char** argv)

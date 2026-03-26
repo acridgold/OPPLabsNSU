@@ -4,16 +4,10 @@
 #PBS -l walltime=00:40:00
 #PBS -j oe
 
-# Переходим в рабочую директорию
 cd $PBS_O_WORKDIR
-
-# 1. Компиляция с оптимизациями
-# Для генератора добавляем OpenMP, чтобы он не ел всё время walltime
 g++ -O3 -fopenmp gen.cpp -o generate
-# Для основной программы используем -O3 и -march=native (для векторизации на узле)
 g++ -O3 -fopenmp -march=native ../src/omp.cpp -o omp_prog
 
-# 2. Подготовка файлов результатов
 RESULT_FILE="RESULT.txt"
 CSV_FILE="bench_results.csv"
 
@@ -21,37 +15,28 @@ echo "=== BENCHMARK START: $(date) ===" > $RESULT_FILE
 echo "CPU Info: $(lscpu | grep 'Model name' | cut -d: -f2 | xargs)" >> $RESULT_FILE
 echo "Threads,Time" > $CSV_FILE
 
-# 3. Генерация данных (делаем один раз перед тестами)
 echo "Generating matrix..." >> $RESULT_FILE
 ./generate >> $RESULT_FILE 2>&1
 
 echo "=== Запуск замеров производительности ===" >> $RESULT_FILE
 
-# Список потоков: от 1 до 24 (проверяем реальные ядра и HT)
 THREADS_LIST="1 2 4 8 12 16 20 24"
 
 for t in $THREADS_LIST
 do
     echo "Running with $t threads..."
 
-    # Заголовок в общем логе
     echo -e "\n>>> TEST RUN: THREADS = $t <<<" >> $RESULT_FILE
     echo "----------------------------------------" >> $RESULT_FILE
 
     export OMP_NUM_THREADS=$t
-    # Для тестов Hyper-Threading лучше выключить жесткую привязку к физическим ядрам
     export OMP_PROC_BIND=false
 
-    # Запускаем программу, сохраняем весь вывод в лог
     OUTPUT=$(./omp_prog)
     echo "$OUTPUT" >> $RESULT_FILE
 
-    # Вытаскиваем время для CSV-таблицы (чтобы удобно строить графики)
     TIME=$(echo "$OUTPUT" | grep "Time:" | awk '{print $2}' | sed 's/s//')
     echo "$t,$TIME" >> $CSV_FILE
 
     echo "----------------------------------------" >> $RESULT_FILE
     echo "Done for $t threads. Time: $TIME s"
-done
-
-echo -e "\n=== Замеры завершены. Сводка в $CSV_FILE ===" >> $RESULT_FILE

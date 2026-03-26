@@ -1,0 +1,85 @@
+=== SCHEDULE INVESTIGATION: =2400, Threads=12 ===
+
+[SCHEDULE: static, 1]
+========================================
+OpenMP Statistics (No Manual AVX):
+  Time taken:     22.4552 s
+  Threads:        12
+----------------------------------------
+Algorithm Results:
+  Status:         CONVERGED
+  Iterations:     4052
+  Final Residual: 9.9644e-13
+  x[0]:           0.000199
+  x[N-1]:         0.003199
+========================================
+
+[SCHEDULE: static, 10]
+========================================
+OpenMP Statistics (No Manual AVX):
+  Time taken:     20.1555 s
+  Threads:        12
+----------------------------------------
+Algorithm Results:
+  Status:         CONVERGED
+  Iterations:     4052
+  Final Residual: 9.9657e-13
+  x[0]:           0.000199
+  x[N-1]:         0.003199
+========================================
+
+[SCHEDULE: static, 100]
+========================================
+OpenMP Statistics (No Manual AVX):
+  Time taken:     13.9865 s
+  Threads:        12
+----------------------------------------
+Algorithm Results:
+  Status:         CONVERGED
+  Iterations:     4052
+  Final Residual: 9.9791e-13
+  x[0]:           0.000199
+  x[N-1]:         0.003199
+========================================
+
+[SCHEDULE: dynamic, 1]
+========================================
+OpenMP Statistics (No Manual AVX):
+  Time taken:     25.1075 s
+  Threads:        12
+----------------------------------------
+Algorithm Results:
+  Status:         CONVERGED
+  Iterations:     4052
+  Final Residual: 9.9789e-13
+  x[0]:           0.000199
+  x[N-1]:         0.003199
+========================================
+
+[SCHEDULE: dynamic, 10]
+========================================
+OpenMP Statistics (No Manual AVX):
+  Time taken:     18.1977 s
+  Threads:        12
+----------------------------------------
+Algorithm Results:
+  Status:         CONVERGED
+  Iterations:     4052
+  Final Residual: 9.9698e-13
+  x[0]:           0.000199
+  x[N-1]:         0.003199
+========================================
+
+[SCHEDULE: dynamic, 100]
+========================================
+OpenMP Statistics (No Manual AVX):
+  Time taken:     17.0416 s
+  Threads:        12
+----------------------------------------
+Algorithm Results:
+  Status:         CONVERGED
+  Iterations:     4052
+  Final Residual: 9.9613e-13
+  x[0]:           0.000199
+  x[N-1]:         0.003199
+========================================

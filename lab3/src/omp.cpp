@@ -10,14 +10,12 @@ constexpr double EPS = 1e-12;
 constexpr int MAX_ITER = 15000;
 
 int main() {
-    double t_start = omp_get_wtime();
-
     std::vector<double> A(N * N);
     std::vector<double> b(N);
     std::vector<double> x(N, 0.0);
     std::vector<double> r(N), Ar(N);
 
-    // Загрузка данных
+    // Загрузка данных (без изменений)
     std::ifstream fa("matrix.bin", std::ios::binary);
     if (!fa) return 1;
     fa.read((char*)A.data(), N * N * sizeof(double));
@@ -36,12 +34,15 @@ int main() {
     double tau = 0.0;
     bool stop_flag = false;
 
-#pragma omp parallel
-    {
+    double t_start = omp_get_wtime();
 
+    // ПРАВИЛЬНАЯ СТРУКТУРА
+    #pragma omp parallel shared(A, b, x, r, Ar, stop_flag, converged_iter, tau)
+    {
         for (int iter = 0; iter < MAX_ITER; ++iter) {
+
             // 1. r = b - Ax
-            #pragma omp for schedule(static)
+            #pragma omp for schedule(runtime)
             for (int i = 0; i < N; ++i) {
                 double Ax_i = 0.0;
                 for (int j = 0; j < N; ++j) {
@@ -54,7 +55,7 @@ int main() {
             #pragma omp single
             r_norm2_shared = 0.0;
 
-            #pragma omp for reduction(+:r_norm2_shared) schedule(static)
+            #pragma omp for reduction(+:r_norm2_shared) schedule(runtime)
             for (int i = 0; i < N; ++i) {
                 r_norm2_shared += r[i] * r[i];
             }
@@ -66,11 +67,12 @@ int main() {
                     stop_flag = true;
                 }
             }
-            #pragma omp barrier
+
+            // Проверка флага остановки всеми потоками
             if (stop_flag) break;
 
             // 3. Ar = A * r
-            #pragma omp for schedule(static)
+            #pragma omp for schedule(runtime)
             for (int i = 0; i < N; ++i) {
                 double Ar_i = 0.0;
                 for (int j = 0; j < N; ++j) {
@@ -83,7 +85,7 @@ int main() {
             #pragma omp single
             { rAr_shared = 0.0; ArAr_shared = 0.0; }
 
-            #pragma omp for reduction(+:rAr_shared, ArAr_shared) schedule(static)
+            #pragma omp for reduction(+:rAr_shared, ArAr_shared) schedule(runtime)
             for (int i = 0; i < N; ++i) {
                 rAr_shared += r[i] * Ar[i];
                 ArAr_shared += Ar[i] * Ar[i];
@@ -92,10 +94,8 @@ int main() {
             #pragma omp single
             tau = rAr_shared / ArAr_shared;
 
-            #pragma omp barrier
-
             // 5. x = x + tau * r
-            #pragma omp for schedule(static)
+            #pragma omp for schedule(runtime)
             for (int i = 0; i < N; ++i) {
                 x[i] += tau * r[i];
             }

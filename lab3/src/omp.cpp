@@ -15,7 +15,6 @@ int main() {
     std::vector<double> x(N, 0.0);
     std::vector<double> r(N), Ar(N);
 
-    // Загрузка данных (без изменений)
     std::ifstream fa("matrix.bin", std::ios::binary);
     if (!fa) return 1;
     fa.read((char*)A.data(), N * N * sizeof(double));
@@ -36,7 +35,6 @@ int main() {
 
     double t_start = omp_get_wtime();
 
-    // ПРАВИЛЬНАЯ СТРУКТУРА
     #pragma omp parallel shared(A, b, x, r, Ar, stop_flag, converged_iter, tau)
     {
         for (int iter = 0; iter < MAX_ITER; ++iter) {

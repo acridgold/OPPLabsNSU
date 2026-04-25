@@ -1,3 +1,6 @@
 # OPP C++ NSU Labs
 ## Done:
-- Nothing yet :)
+- lab1
+- lab2
+- lab3
+- lab4

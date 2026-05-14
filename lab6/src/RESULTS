@@ -1,0 +1,77 @@
+hpcuser34@clu:~/labs/lab6/build> cat Lab6_MPI_pthreads.o7796296
+============================================================
+  Сборка приложения
+============================================================
+Сборка завершена.
+
+============================================================
+  Замеры производительности
+============================================================
+
+--- NP = 1 ---
+  [iter 0] Tmax=1.0105 s  Tmin=1.0105 s  delta=0.0000 s  imbalance=0.00%
+  [iter 1] Tmax=1.0105 s  Tmin=1.0105 s  delta=0.0000 s  imbalance=0.00%
+  [iter 2] Tmax=1.0101 s  Tmin=1.0101 s  delta=0.0000 s  imbalance=0.00%
+  [iter 3] Tmax=1.0104 s  Tmin=1.0104 s  delta=0.0000 s  imbalance=0.00%
+  [iter 4] Tmax=1.0102 s  Tmin=1.0102 s  delta=0.0000 s  imbalance=0.00%
+
+--- NP = 2 ---
+  [iter 0] Tmax=1.8156 s  Tmin=1.8155 s  delta=0.0001 s  imbalance=0.01%
+  [iter 1] Tmax=1.4199 s  Tmin=1.4199 s  delta=0.0000 s  imbalance=0.00%
+  [iter 2] Tmax=1.8159 s  Tmin=1.8159 s  delta=0.0000 s  imbalance=0.00%
+  [iter 3] Tmax=1.4199 s  Tmin=1.4199 s  delta=0.0000 s  imbalance=0.00%
+  [iter 4] Tmax=1.8156 s  Tmin=1.8155 s  delta=0.0001 s  imbalance=0.00%
+
+--- NP = 4 ---
+  [iter 0] Tmax=3.3512 s  Tmin=3.3510 s  delta=0.0002 s  imbalance=0.00%
+  [iter 1] Tmax=2.7843 s  Tmin=2.7841 s  delta=0.0002 s  imbalance=0.01%
+  [iter 2] Tmax=2.4188 s  Tmin=2.4187 s  delta=0.0001 s  imbalance=0.00%
+  [iter 3] Tmax=2.2456 s  Tmin=2.2453 s  delta=0.0003 s  imbalance=0.01%
+  [iter 4] Tmax=3.3519 s  Tmin=3.3518 s  delta=0.0001 s  imbalance=0.00%
+
+--- NP = 8 ---
+  [iter 0] Tmax=6.9792 s  Tmin=6.9790 s  delta=0.0001 s  imbalance=0.00%
+  [iter 1] Tmax=6.3250 s  Tmin=6.3248 s  delta=0.0002 s  imbalance=0.00%
+  [iter 2] Tmax=5.7435 s  Tmin=5.7432 s  delta=0.0003 s  imbalance=0.00%
+  [iter 3] Tmax=5.2332 s  Tmin=5.2319 s  delta=0.0013 s  imbalance=0.03%
+  [iter 4] Tmax=4.7982 s  Tmin=4.7968 s  delta=0.0014 s  imbalance=0.03%
+
+--- NP = 12 ---
+  [iter 0] Tmax=10.4024 s  Tmin=10.4021 s  delta=0.0002 s  imbalance=0.00%
+  [iter 1] Tmax=9.7302 s  Tmin=9.7299 s  delta=0.0003 s  imbalance=0.00%
+  [iter 2] Tmax=9.0251 s  Tmin=9.0248 s  delta=0.0003 s  imbalance=0.00%
+  [iter 3] Tmax=8.3096 s  Tmin=8.3093 s  delta=0.0003 s  imbalance=0.00%
+  [iter 4] Tmax=7.8703 s  Tmin=7.8700 s  delta=0.0003 s  imbalance=0.00%
+
+--- NP = 16 ---
+  [iter 0] Tmax=12.9143 s  Tmin=12.9106 s  delta=0.0037 s  imbalance=0.03%
+  [iter 1] Tmax=12.1482 s  Tmin=12.1479 s  delta=0.0003 s  imbalance=0.00%
+  [iter 2] Tmax=11.4598 s  Tmin=11.4595 s  delta=0.0003 s  imbalance=0.00%
+  [iter 3] Tmax=10.8328 s  Tmin=10.8326 s  delta=0.0002 s  imbalance=0.00%
+  [iter 4] Tmax=10.4790 s  Tmin=10.4786 s  delta=0.0004 s  imbalance=0.00%
+
+--- NP = 24 ---
+  [iter 0] Tmax=19.2656 s  Tmin=19.2652 s  delta=0.0005 s  imbalance=0.00%
+  [iter 1] Tmax=18.7461 s  Tmin=18.7458 s  delta=0.0003 s  imbalance=0.00%
+  [iter 2] Tmax=18.0573 s  Tmin=18.0571 s  delta=0.0003 s  imbalance=0.00%
+  [iter 3] Tmax=17.2866 s  Tmin=17.2864 s  delta=0.0003 s  imbalance=0.00%
+  [iter 4] Tmax=16.6152 s  Tmin=16.6149 s  delta=0.0003 s  imbalance=0.00%
+
+============================================================
+  Сводная таблица
+============================================================
+NP    | T_total (s)    | S          | E
+------|----------------|------------|------------
+1     | 10.1037        | 1.0000     | 1.0000
+2     | 16.1776        | 0.6245     | 0.3123
+4     | 27.7508        | 0.3641     | 0.0910
+8     | 55.4816        | 0.1821     | 0.0228
+12    | 78.9756        | 0.1279     | 0.0107
+16    | 102.9394       | 0.0982     | 0.0061
+24    | 165.3225       | 0.0611     | 0.0025
+
+============================================================
+  MPE-профилировка, NP=16
+============================================================
+
+=== Готово ===

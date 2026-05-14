@@ -1,295 +1,234 @@
 #include <mpi.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <stdint.h>
+#include <pthread.h>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <unistd.h>
 
-#define CELL(buf, r, c, Y)  ((buf)[(r)*(Y)+(c)])
+static constexpr int TASKS_PER_PROC = 200;
+static constexpr int L               = 10000;
+static constexpr int NUM_ITER        = 10;
 
-using cell_t = unsigned char;
+enum Tags {
+    TAG_REQUEST = 1, TAG_REPLY, TAG_DATA,
+    TAG_STOP_REPORT, TAG_BUSY_REPORT, TAG_FINAL_STOP
+};
 
-static int rows_for_rank(int total, int np, int r)
-{
-    return total / np + (r < total % np ? 1 : 0);
+typedef struct { int id; int repeatNum; } Task;
+
+typedef struct {
+    int rank, size;
+    Task* tasks;
+    int   taskCount;
+    int   front;
+    pthread_mutex_t mu;
+    double globalRes;
+    int    doneTasks;
+    int workerIdle;
+    int iterDone;
+    int reported_idle;
+    int idle_count;
+    pthread_cond_t cvWorker;
+} State;
+
+typedef struct { State* st; int iter; } Args;
+
+static int task_weight(int i, int iter, int size) {
+    int a = abs(50 - i % 100);
+    int b = abs((i / 100) - (iter % size));
+    return (a + 1) * (b + 1) * L;
 }
 
-static int first_row_for_rank(int total, int np, int r)
-{
-    int base = total / np, extra = total % np;
-    return r * base + (r < extra ? r : extra);
-}
-
-/* FNV-1a хэш локальной полосы */
-static uint64_t hash_strip(const cell_t* buf, int local_rows, int Y)
-{
-    uint64_t h = 14695981039346656037ULL;
-    const cell_t* p = buf;
-    int n = local_rows * Y;
-    for (int i = 0; i < n; i++)
-    {
-        h ^= (uint64_t)p[i];
-        h *= 1099511628211ULL;
-    }
-    return h;
-}
-
-int main(int argc, char* argv[])
-{
-    MPI_Init(&argc, &argv);
-
-    int rank, np;
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    MPI_Comm_size(MPI_COMM_WORLD, &np);
-    double t_start = MPI_Wtime();
-
-    if (argc < 2)
-    {
-        if (rank == 0) fprintf(stderr, "Usage: %s <input_file> [max_iter]\n", argv[0]);
-        MPI_Finalize();
-        return 1;
-    }
-
-    int X = 0, Y = 0;
-    int max_iter = (argc >= 3) ? atoi(argv[2]) : 100000;
-    cell_t* global_data = NULL;
-
-    if (rank == 0)
-    {
-        FILE* f = fopen(argv[1], "r");
-        if (!f) { X = -1; }
-        else
-        {
-            char line[100000];
-            if (fgets(line, sizeof(line), f))
-            {
-                Y = (int)strlen(line);
-                while (Y > 0 && (line[Y - 1] == '\n' || line[Y - 1] == '\r')) Y--;
-                X = 1;
-                while (fgets(line, sizeof(line), f)) if (strlen(line) > 1) X++;
-            }
-            rewind(f);
-            global_data = (cell_t*)malloc(X * Y * sizeof(cell_t));
-            for (int i = 0; i < X; i++)
-                if (fgets(line, sizeof(line), f))
-                    for (int j = 0; j < Y; j++)
-                        global_data[i * Y + j] = (line[j] == '#') ? 1 : 0;
-            fclose(f);
-        }
-    }
-
-    MPI_Bcast(&X, 1, MPI_INT, 0, MPI_COMM_WORLD);
-    if (X < 0)
-    {
-        if (rank == 0) perror("File error");
-        if (global_data) free(global_data);
-        MPI_Finalize();
-        return 1;
-    }
-    MPI_Bcast(&Y, 1, MPI_INT, 0, MPI_COMM_WORLD);
-
-    const int local_rows = rows_for_rank(X, np, rank);
-    const int prev_rank = (rank - 1 + np) % np;
-    const int next_rank_p = (rank + 1) % np;
-
-    cell_t* const buf0 = (cell_t*)calloc((local_rows + 2) * Y, sizeof(cell_t));
-    cell_t* const buf1 = (cell_t*)calloc((local_rows + 2) * Y, sizeof(cell_t));
-
-    /* Раздача данных */
-    if (rank == 0)
-    {
-        for (int r = 0; r < np; r++)
-        {
-            int r_start = first_row_for_rank(X, np, r);
-            int r_count = rows_for_rank(X, np, r);
-            if (r == 0)
-                memcpy(&CELL(buf0, 1, 0, Y), &global_data[0], r_count * Y);
-            else
-                MPI_Send(&global_data[r_start * Y], r_count * Y,
-                         MPI_UNSIGNED_CHAR, r, 0, MPI_COMM_WORLD);
-        }
-        free(global_data);
-    }
-    else
-    {
-        MPI_Recv(&CELL(buf0, 1, 0, Y), local_rows * Y,
-                 MPI_UNSIGNED_CHAR, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-    }
-
-    int hash_cap = 1024;
-    int hash_size = 0;
-    uint64_t* hash_hist = NULL;
-    if (rank == 0)
-    {
-        hash_hist = (uint64_t*)malloc(hash_cap * sizeof(uint64_t));
-    }
-
-    uint64_t local_h = hash_strip(&CELL(buf0, 1, 0, Y), local_rows, Y);
-    uint64_t global_h = 0;
-    MPI_Reduce(&local_h, &global_h, 1, MPI_UINT64_T, MPI_BXOR, 0, MPI_COMM_WORLD);
-    if (rank == 0)
-    {
-        hash_hist[hash_size++] = global_h;
-    }
-
-    int flag_send[1];
-    int stopped_iter = -1;
-
-    for (int iter = 1; iter <= max_iter; iter++)
-    {
-        cell_t* cur = (iter % 2 == 1) ? buf0 : buf1;
-        cell_t* dst = (iter % 2 == 1) ? buf1 : buf0;
-
-        /* Обмен граничными строками */
-        MPI_Request req[4];
-        MPI_Isend(&CELL(cur, 1, 0, Y), Y, MPI_UNSIGNED_CHAR,
-                  prev_rank, 0, MPI_COMM_WORLD, &req[0]);
-        MPI_Isend(&CELL(cur, local_rows, 0, Y), Y, MPI_UNSIGNED_CHAR,
-                  next_rank_p, 1, MPI_COMM_WORLD, &req[1]);
-        MPI_Irecv(&CELL(cur, 0, 0, Y), Y, MPI_UNSIGNED_CHAR,
-                  prev_rank, 1, MPI_COMM_WORLD, &req[2]);
-        MPI_Irecv(&CELL(cur, local_rows+1, 0, Y), Y, MPI_UNSIGNED_CHAR,
-                  next_rank_p, 0, MPI_COMM_WORLD, &req[3]);
-
-        /* Внутренние строки */
-        for (int r = 2; r <= local_rows - 1; r++)
-            for (int c = 0; c < Y; c++)
-            {
-                int lc = (c - 1 + Y) % Y, rc = (c + 1) % Y;
-                int alive =
-                    CELL(cur, r-1, lc, Y) + CELL(cur, r-1, c, Y) + CELL(cur, r-1, rc, Y) +
-                    CELL(cur, r, lc, Y) + CELL(cur, r, rc, Y) +
-                    CELL(cur, r+1, lc, Y) + CELL(cur, r+1, c, Y) + CELL(cur, r+1, rc, Y);
-                CELL(dst, r, c, Y) = CELL(cur, r, c, Y) ? (alive == 2 || alive == 3) : (alive == 3);
-            }
-
-        /* Верхний сосед -> первая строка */
-
-        for (int c = 0; c < Y; c++)
-        {
-            int lc = (c - 1 + Y) % Y, rc = (c + 1) % Y;
-            int alive =
-                CELL(cur, 0, lc, Y) + CELL(cur, 0, c, Y) + CELL(cur, 0, rc, Y) +
-                CELL(cur, 1, lc, Y) + CELL(cur, 1, rc, Y) +
-                CELL(cur, 2, lc, Y) + CELL(cur, 2, c, Y) + CELL(cur, 2, rc, Y);
-            CELL(dst, 1, c, Y) = CELL(cur, 1, c, Y) ? (alive == 2 || alive == 3) : (alive == 3);
-        }
-
-        /* Нижний сосед -> последняя строка */
-        MPI_Wait(&req[0], MPI_STATUS_IGNORE);
-        MPI_Wait(&req[2], MPI_STATUS_IGNORE);
-        MPI_Wait(&req[1], MPI_STATUS_IGNORE);
-        MPI_Wait(&req[3], MPI_STATUS_IGNORE);
-        {
-            int r = local_rows;
-            for (int c = 0; c < Y; c++)
-            {
-                int lc = (c - 1 + Y) % Y, rc = (c + 1) % Y;
-                int alive =
-                    CELL(cur, r-1, lc, Y) + CELL(cur, r-1, c, Y) + CELL(cur, r-1, rc, Y) +
-                    CELL(cur, r, lc, Y) + CELL(cur, r, rc, Y) +
-                    CELL(cur, r+1, lc, Y) + CELL(cur, r+1, c, Y) + CELL(cur, r+1, rc, Y);
-                CELL(dst, r, c, Y) = CELL(cur, r, c, Y) ? (alive == 2 || alive == 3) : (alive == 3);
-            }
-        }
-
-        /* Считаем локальный хэш dst, собираем глобальный через Iallreduce */
-        local_h = hash_strip(&CELL(dst, 1, 0, Y), local_rows, Y);
-        uint64_t global_h_new = 0;
-        MPI_Request req_stop;
-        MPI_Iallreduce(&local_h, &global_h_new, 1, MPI_UINT64_T,
-                       MPI_BXOR, MPI_COMM_WORLD, &req_stop);
-
-        MPI_Wait(&req_stop, MPI_STATUS_IGNORE);
-
-        /* Ранг 0 проверяет совпадение с полной историей */
-        flag_send[0] = 0;
-        if (rank == 0)
-        {
-            for (int k = 0; k < hash_size; k++)
-            {
-                if (hash_hist[k] == global_h_new)
-                {
-                    flag_send[0] = 1;
-                    if (rank == 0)
-                        printf("  [совпадение с итерацией %d, период=%d]\n",
-                               k, iter - k);
-                    break;
-                }
-            }
-            /* Сохранить хэш */
-            if (hash_size == hash_cap)
-            {
-                hash_cap *= 2;
-                hash_hist = (uint64_t*)realloc(hash_hist, hash_cap * sizeof(uint64_t));
-            }
-            hash_hist[hash_size++] = global_h_new;
-        }
-
-        /* Раздача флага останова от ранга 0 всем процессам*/
-        MPI_Bcast(flag_send, 1, MPI_INT, 0, MPI_COMM_WORLD);
-
-        if (flag_send[0])
-        {
-            stopped_iter = iter;
+static void* worker_thread(void* arg) {
+    State* st = ((Args*)arg)->st;
+    while (true) {
+        pthread_mutex_lock(&st->mu);
+        while (st->front >= st->taskCount && !st->iterDone)
+            pthread_cond_wait(&st->cvWorker, &st->mu);
+        if (st->iterDone && st->front >= st->taskCount) {
+            pthread_mutex_unlock(&st->mu);
             break;
         }
+        Task t = st->tasks[st->front++];
+        pthread_mutex_unlock(&st->mu);
+
+        double res = 0.0;
+        for (int k = 0; k < t.repeatNum; k++) res += sin(t.id + k);
+
+        pthread_mutex_lock(&st->mu);
+        st->globalRes += res;
+        st->doneTasks++;
+        if (st->front >= st->taskCount) st->workerIdle = 1;
+        pthread_mutex_unlock(&st->mu);
     }
+    return NULL;
+}
 
-    double t_local = MPI_Wtime() - t_start;
-    double t_total;
-    MPI_Reduce(&t_local, &t_total, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
-
-    int last_iter = (stopped_iter >= 0) ? stopped_iter : max_iter;
-    cell_t* final_buf = (last_iter % 2 == 1) ? buf1 : buf0;
-
-    int* recvcounts = NULL;
-    int* displs = NULL;
-    cell_t* gathered = NULL;
-    if (rank == 0)
-    {
-        recvcounts = (int*)malloc(np * sizeof(int));
-        displs = (int*)malloc(np * sizeof(int));
-        for (int r = 0; r < np; r++)
-        {
-            recvcounts[r] = rows_for_rank(X, np, r) * Y;
-            displs[r] = first_row_for_rank(X, np, r) * Y;
+static void handle_requests(State* st) {
+    int flag; MPI_Status status;
+    while (MPI_Iprobe(MPI_ANY_SOURCE, TAG_REQUEST, MPI_COMM_WORLD, &flag, &status), flag) {
+        int src = status.MPI_SOURCE;
+        int dummy; MPI_Recv(&dummy, 1, MPI_INT, src, TAG_REQUEST, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        pthread_mutex_lock(&st->mu);
+        int give = (st->taskCount - st->front) / 2;
+        if (give < 1) give = 0;
+        MPI_Send(&give, 1, MPI_INT, src, TAG_REPLY, MPI_COMM_WORLD);
+        if (give > 0) {
+            MPI_Send(st->tasks + (st->taskCount - give), give * (int)sizeof(Task), MPI_BYTE, src, TAG_DATA, MPI_COMM_WORLD);
+            st->taskCount -= give;
         }
-        gathered = (cell_t*)malloc(X * Y * sizeof(cell_t));
+        pthread_mutex_unlock(&st->mu);
     }
+    if (st->rank == 0) {
+        while (MPI_Iprobe(MPI_ANY_SOURCE, TAG_STOP_REPORT, MPI_COMM_WORLD, &flag, &status), flag) {
+            int d; MPI_Recv(&d, 1, MPI_INT, status.MPI_SOURCE, TAG_STOP_REPORT, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            st->idle_count++;
+        }
+        while (MPI_Iprobe(MPI_ANY_SOURCE, TAG_BUSY_REPORT, MPI_COMM_WORLD, &flag, &status), flag) {
+            int d; MPI_Recv(&d, 1, MPI_INT, status.MPI_SOURCE, TAG_BUSY_REPORT, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            st->idle_count--;
+        }
+    } else if (MPI_Iprobe(0, TAG_FINAL_STOP, MPI_COMM_WORLD, &flag, &status), flag) {
+        int d; MPI_Recv(&d, 1, MPI_INT, 0, TAG_FINAL_STOP, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        pthread_mutex_lock(&st->mu);
+        st->iterDone = 1;
+        pthread_cond_signal(&st->cvWorker);
+        pthread_mutex_unlock(&st->mu);
+    }
+}
 
-    MPI_Gatherv(&CELL(final_buf, 1, 0, Y), local_rows * Y, MPI_UNSIGNED_CHAR,
-                gathered, recvcounts, displs, MPI_UNSIGNED_CHAR,
-                0, MPI_COMM_WORLD);
+static void* listener_thread(void* arg) {
+    State* st = ((Args*)arg)->st;
+    while (1) {
+        handle_requests(st);
+        pthread_mutex_lock(&st->mu);
+        if (st->iterDone) { pthread_mutex_unlock(&st->mu); break; }
+        int idle = st->workerIdle;
+        pthread_mutex_unlock(&st->mu);
 
-    if (rank == 0)
-    {
-        printf("t_total    = %.6f\n", t_total);
-        printf("X=%d Y=%d\n", X, Y);
-        if (stopped_iter >= 0)
-            printf("stopped_at = %d\n", stopped_iter);
-        else
-            printf("stopped_at = max_iter (%d)\n", max_iter);
-
-        FILE* out = fopen("output.txt", "w");
-        if (out)
-        {
-            for (int i = 0; i < X; i++)
-            {
-                for (int j = 0; j < Y; j++)
-                    fputc(gathered[i * Y + j] ? '#' : '.', out);
-                fputc('\n', out);
+        if (idle) {
+            int success = 0;
+            for (int i = 1; i < st->size && !success; i++) {
+                int target = (st->rank + i) % st->size;
+                int d = 0; MPI_Send(&d, 1, MPI_INT, target, TAG_REQUEST, MPI_COMM_WORLD);
+                int count = -1;
+                while (1) {
+                    handle_requests(st);
+                    int f; MPI_Status s;
+                    MPI_Iprobe(target, TAG_REPLY, MPI_COMM_WORLD, &f, &s);
+                    if (f) {
+                        MPI_Recv(&count, 1, MPI_INT, target, TAG_REPLY, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                        break;
+                    }
+                    if (st->iterDone) break;
+                    usleep(500);
+                }
+                if (count > 0) {
+                    Task* buf = (Task*)malloc((size_t)count * sizeof(Task));
+                    MPI_Recv(buf, count * (int)sizeof(Task), MPI_BYTE, target, TAG_DATA, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                    pthread_mutex_lock(&st->mu);
+                    if (st->reported_idle && st->rank != 0) {
+                        int b = 1; MPI_Send(&b, 1, MPI_INT, 0, TAG_BUSY_REPORT, MPI_COMM_WORLD);
+                        st->reported_idle = 0;
+                    }
+                    st->tasks = (Task*)realloc(st->tasks, (size_t)(st->taskCount + count) * sizeof(Task));
+                    memcpy(st->tasks + st->taskCount, buf, (size_t)count * sizeof(Task));
+                    st->taskCount += count; st->workerIdle = 0;
+                    pthread_cond_signal(&st->cvWorker);
+                    pthread_mutex_unlock(&st->mu);
+                    free(buf); success = 1;
+                }
+                if (st->iterDone) break;
             }
-            fclose(out);
-            printf("Финальное состояние записано в output.txt\n");
+            if (!success && !st->iterDone) {
+                if (st->rank != 0) {
+                    if (!st->reported_idle) {
+                        int s = 1; MPI_Send(&s, 1, MPI_INT, 0, TAG_STOP_REPORT, MPI_COMM_WORLD);
+                        st->reported_idle = 1;
+                    }
+                } else {
+                    pthread_mutex_lock(&st->mu);
+                    if (st->idle_count == st->size - 1) {
+                        st->iterDone = 1; pthread_cond_signal(&st->cvWorker);
+                        for (int k = 1; k < st->size; k++) {
+                            int stop = 1; MPI_Send(&stop, 1, MPI_INT, k, TAG_FINAL_STOP, MPI_COMM_WORLD);
+                        }
+                    }
+                    pthread_mutex_unlock(&st->mu);
+                }
+            }
         }
-        free(recvcounts);
-        free(displs);
-        free(gathered);
-        free(hash_hist);
+        usleep(1000);
+    }
+    return NULL;
+}
+
+int main(int argc, char** argv) {
+    int prov; MPI_Init_thread(&argc, &argv, MPI_THREAD_MULTIPLE, &prov);
+    State st; memset(&st, 0, sizeof(st));
+    MPI_Comm_rank(MPI_COMM_WORLD, &st.rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &st.size);
+    pthread_mutex_init(&st.mu, NULL);
+    pthread_cond_init(&st.cvWorker, NULL);
+
+    if (st.rank == 0)
+        printf("=== MPI+pthreads | procs=%d tasks/proc=%d L=%d iters=%d ===\n\n",
+               st.size, TASKS_PER_PROC, L, NUM_ITER);
+
+    double* allTimes = (st.rank == 0)
+                       ? (double*)malloc((size_t)st.size * sizeof(double))
+                       : NULL;
+
+    for (int iter = 0; iter < NUM_ITER; iter++) {
+        pthread_mutex_lock(&st.mu);
+        if (st.tasks) free(st.tasks);
+        st.tasks = (Task*)malloc((size_t)TASKS_PER_PROC * sizeof(Task));
+        st.taskCount = TASKS_PER_PROC; st.front = 0; st.globalRes = 0.0; st.doneTasks = 0;
+        st.workerIdle = 0; st.iterDone = 0; st.reported_idle = 0; st.idle_count = 0;
+        for (int i = 0; i < TASKS_PER_PROC; i++) {
+            int gid = st.rank * TASKS_PER_PROC + i;
+            st.tasks[i].id = gid;
+            st.tasks[i].repeatNum = task_weight(gid, iter, st.size);
+        }
+        pthread_mutex_unlock(&st.mu);
+
+        Args args = {&st, iter};
+        pthread_t wt, lt;
+        pthread_create(&wt, NULL, worker_thread,   &args);
+        pthread_create(&lt, NULL, listener_thread, &args);
+
+        double t1 = MPI_Wtime();
+        pthread_join(lt, NULL);
+        pthread_join(wt, NULL);
+        double t2 = MPI_Wtime();
+        double localTime = t2 - t1;
+
+        printf("  [rank %d] iter=%d  t=%.4f s  tasks=%d  res=%.6f\n",
+               st.rank, iter, localTime, st.doneTasks, st.globalRes);
+        fflush(stdout);
+
+        MPI_Gather(&localTime, 1, MPI_DOUBLE,
+                   allTimes,   1, MPI_DOUBLE,
+                   0, MPI_COMM_WORLD);
+
+        if (st.rank == 0) {
+            double tmax = allTimes[0], tmin = allTimes[0];
+            for (int p = 1; p < st.size; p++) {
+                if (allTimes[p] > tmax) tmax = allTimes[p];
+                if (allTimes[p] < tmin) tmin = allTimes[p];
+            }
+            double imb = (tmax > 0.0) ? (tmax - tmin) / tmax * 100.0 : 0.0;
+            printf("  [iter %d] Tmax=%.4f s  Tmin=%.4f s  delta=%.4f s  imbalance=%.2f%%\n\n",
+                   iter, tmax, tmin, tmax - tmin, imb);
+            fflush(stdout);
+        }
     }
 
-    free(buf0);
-    free(buf1);
+    if (st.rank == 0) free(allTimes);
+    free(st.tasks);
+    pthread_mutex_destroy(&st.mu);
+    pthread_cond_destroy(&st.cvWorker);
     MPI_Finalize();
     return 0;
 }

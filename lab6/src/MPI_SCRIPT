@@ -1,106 +1,106 @@
 #!/bin/bash
-#PBS -N GameOfLife_MPI
+#PBS -N Lab6_MPI_pthreads
 #PBS -l nodes=2:ppn=12
-#PBS -l walltime=03:00:00
+#PBS -l walltime=01:30:00
 #PBS -j oe
 
 cd $PBS_O_WORKDIR
 
-# Параметры задачи
-INPUT_FILE="input.txt"
-MAX_ITER=1000
-# Размеры для генератора (должны соответствовать тому, что ожидает MPI версия, если она не умеет автоопределение)
-X=2400
-Y=2400
+SRC="../src/lb.cpp"
+BIN="./lb"
+BIN_MPE="./lb_mpe"
 
-echo "=== Подготовка: Генерация поля ==="
-# Создаем скрипт генератора на лету или запускаем существующий
-python3 -c "
-import random
-with open('$INPUT_FILE', 'w') as f:
-    for _ in range($X):
-        row = ''.join(['#' if random.random() < 0.2 else '.' for _ in range($Y)])
-        f.write(row + '\n')
-"
-echo "Поле $X x $Y сгенерировано в $INPUT_FILE"
+echo "============================================================"
+echo "  Сборка"
+echo "============================================================"
 
-echo "=== Компиляция ==="
-# Используем -O3 для максимальной производительности
-icpc     -O3 -std=c++11 -o life_seq      ../src/life_seq.cpp
-mpiicpc  -O3 -std=c++11 -o life_mpi      ../src/life_mpi.cpp
-mpecxx -mpilog -O3 -std=c++11 -o life_mpi_mpe ../src/life_mpi.cpp
-echo "Компиляция завершена."
+mpiicpc -mt_mpi -O2 -std=c++11 -o $BIN $SRC -lm -lpthread
 
+# MPE: пробуем разные варианты линковки
+MPE_OK=0
+if command -v mpecxx >/dev/null 2>&1; then
+    mpecxx -mpilog -mt_mpi -O2 -std=c++11 -o $BIN_MPE $SRC -lm -lpthread && MPE_OK=1
+fi
+if [ $MPE_OK -eq 0 ]; then
+    # ищем libmpe вручную
+    MPE_LIB=$(find /usr /opt 2>/dev/null -name "libmpe.so" -o -name "libmpe.a" 2>/dev/null | head -1)
+    MPE_DIR=$(dirname "$MPE_LIB" 2>/dev/null)
+    if [ -n "$MPE_DIR" ]; then
+        mpiicpc -mt_mpi -O2 -std=c++11 -o $BIN_MPE $SRC -lm -lpthread \
+            -L"$MPE_DIR" -lmpe -llmpe && MPE_OK=1
+    fi
+fi
+if [ $MPE_OK -eq 0 ]; then
+    echo "ВНИМАНИЕ: MPE недоступен, lb_mpe не собран"
+    BIN_MPE=""
+fi
+
+echo "Сборка завершена."
 echo ""
-echo "════════════════════════════════════════════════════════════"
-echo "  БЛОК 1: Последовательный запуск"
-echo "════════════════════════════════════════════════════════════"
-# ВАЖНО: передаем ИМЯ ФАЙЛА и ИТЕРАЦИИ
-./life_seq $INPUT_FILE $MAX_ITER | tee sequential.txt
-T_SEQ=$(grep "t_sequential" sequential.txt | awk '{print $3}')
-echo "Базовое время T_seq = ${T_SEQ} с"
 
-echo ""
-echo "════════════════════════════════════════════════════════════"
-echo "  БЛОК 2: Масштабирование (ускорение и эффективность)"
-echo "════════════════════════════════════════════════════════════"
+echo "============================================================"
+echo "  Замеры производительности"
+echo "============================================================"
 
 NP_LIST="1 2 4 8 12 16 24"
 
 for NP in $NP_LIST; do
     echo ""
     echo "--- NP = ${NP} ---"
-    # Здесь убедись, что твоя life_mpi тоже принимает <файл> <итерации>
-    # Если MPI версия все еще принимает X Y, замени аргументы на $X $Y $MAX_ITER
     if [ "$NP" -le 12 ]; then
         mpirun -machinefile $PBS_NODEFILE -np $NP \
-            ./life_mpi $INPUT_FILE $MAX_ITER > result_np${NP}.txt 2>&1
+            $BIN > result_np${NP}.txt 2>&1
     else
         mpirun -machinefile $PBS_NODEFILE -np $NP -perhost 12 \
-            ./life_mpi $INPUT_FILE $MAX_ITER > result_np${NP}.txt 2>&1
+            $BIN > result_np${NP}.txt 2>&1
     fi
-    cat result_np${NP}.txt
+    grep "Tmax\|imbalance" result_np${NP}.txt | head -10
 done
 
 echo ""
-echo "════════════════════════════════════════════════════════════"
-echo "  Сводная таблица: ускорение и эффективность"
-echo "════════════════════════════════════════════════════════════"
-printf "%-4s | %-14s | %-12s | %-11s\n" "NP" "t_total (s)" "Ускорение S" "Эффект. E"
-printf -- "-----|----------------|--------------|------------\n"
+echo "============================================================"
+echo "  Сводная таблица"
+echo "============================================================"
+
+T_BASE=$(grep "Tmax" result_np1.txt | awk '{sum += $3} END {printf "%.4f", sum}')
+
+printf "%-5s | %-14s | %-10s | %-10s\n" "NP" "T_total (s)" "S" "E"
+printf -- "------|----------------|------------|------------\n"
+
 for NP in $NP_LIST; do
-    TT=$(grep "t_total" result_np${NP}.txt | awk '{print $3}')
-    if [ -n "$TT" ] && [ -n "$T_SEQ" ] && [ "$T_SEQ" != "0" ]; then
-        S=$(awk "BEGIN{printf \"%.4f\", ${T_SEQ}/${TT}}")
+    TT=$(grep "Tmax" result_np${NP}.txt | awk '{sum += $3} END {printf "%.4f", sum}')
+    if [ -n "$TT" ] && [ -n "$T_BASE" ] && [ "$T_BASE" != "0" ]; then
+        S=$(awk "BEGIN{printf \"%.4f\", ${T_BASE}/${TT}}")
         E=$(awk "BEGIN{printf \"%.4f\", ${S}/${NP}}")
     else
         S="-"; E="-"
     fi
-    printf "%-4s | %-14s | %-12s | %-11s\n" "$NP" "${TT:--}" "$S" "$E"
+    printf "%-5s | %-14s | %-10s | %-10s\n" "$NP" "${TT:--}" "$S" "$E"
 done
 
 echo ""
-echo "════════════════════════════════════════════════════════════"
-echo "  БЛОК 3: Профилирование с MPE (-mpilog), 16 процессов"
-echo "════════════════════════════════════════════════════════════"
-mpirun -machinefile $PBS_NODEFILE -np 16 -perhost 12 \
-    ./life_mpi_mpe $INPUT_FILE $MAX_ITER > profile_np16.txt 2>&1
+echo "============================================================"
+echo "  MPE-профилировка, NP=16"
+echo "============================================================"
 
-TT_P=$(grep "t_total" profile_np16.txt | awk '{print $3}')
-if [ -n "$TT_P" ] && [ -n "$T_SEQ" ]; then
-    S_P=$(awk "BEGIN{printf \"%.4f\", ${T_SEQ}/${TT_P}}")
-    E_P=$(awk "BEGIN{printf \"%.4f\", ${S_P}/16}")
-    echo "  Ускорение S(16) = ${S_P},  Эффективность E(16) = ${E_P}"
-fi
+if [ -n "$BIN_MPE" ] && [ -f "$BIN_MPE" ]; then
+    mpirun -machinefile $PBS_NODEFILE -np 16 -perhost 12 \
+        $BIN_MPE > profile_np16.txt 2>&1
+    grep "Tmax\|imbalance" profile_np16.txt | head -10
 
-# Сохранение лога MPE
-if [ -f life_mpi_mpe.clog2 ]; then
-    mv life_mpi_mpe.clog2 profile_np16.clog2
-elif [ -f *.clog2 ]; then
-    mv *.clog2 profile_np16.clog2
+    # clog2 может называться по имени бинарника
+    if ls *.clog2 1>/dev/null 2>&1; then
+        mv *.clog2 profile_np16.clog2
+        echo "Лог MPE сохранён  : profile_np16.clog2"
+        echo "Открыть: jumpshot profile_np16.clog2"
+    else
+        echo "ВНИМАНИЕ: .clog2 не создан"
+        echo "Проверьте: ldd $BIN_MPE | grep mpe"
+        ls -la *.slog2 *.log 2>/dev/null || true
+    fi
+else
+    echo "lb_mpe не собран, профилировка пропущена"
 fi
 
 echo ""
 echo "=== Готово ==="
-echo "Итоговое поле сохранено в output.txt (от последнего запуска)"
-echo "Просмотр профиля: jumpshot profile_np16.clog2"

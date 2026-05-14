@@ -1,0 +1,106 @@
+#!/bin/bash
+#PBS -N GameOfLife_MPI
+#PBS -l nodes=2:ppn=12
+#PBS -l walltime=03:00:00
+#PBS -j oe
+
+cd $PBS_O_WORKDIR
+
+# Параметры задачи
+INPUT_FILE="input.txt"
+MAX_ITER=1000
+# Размеры для генератора (должны соответствовать тому, что ожидает MPI версия, если она не умеет автоопределение)
+X=2400
+Y=2400
+
+echo "=== Подготовка: Генерация поля ==="
+# Создаем скрипт генератора на лету или запускаем существующий
+python3 -c "
+import random
+with open('$INPUT_FILE', 'w') as f:
+    for _ in range($X):
+        row = ''.join(['#' if random.random() < 0.2 else '.' for _ in range($Y)])
+        f.write(row + '\n')
+"
+echo "Поле $X x $Y сгенерировано в $INPUT_FILE"
+
+echo "=== Компиляция ==="
+# Используем -O3 для максимальной производительности
+icpc     -O3 -std=c++11 -o life_seq      ../src/life_seq.cpp
+mpiicpc  -O3 -std=c++11 -o life_mpi      ../src/life_mpi.cpp
+mpecxx -mpilog -O3 -std=c++11 -o life_mpi_mpe ../src/life_mpi.cpp
+echo "Компиляция завершена."
+
+echo ""
+echo "════════════════════════════════════════════════════════════"
+echo "  БЛОК 1: Последовательный запуск"
+echo "════════════════════════════════════════════════════════════"
+# ВАЖНО: передаем ИМЯ ФАЙЛА и ИТЕРАЦИИ
+./life_seq $INPUT_FILE $MAX_ITER | tee sequential.txt
+T_SEQ=$(grep "t_sequential" sequential.txt | awk '{print $3}')
+echo "Базовое время T_seq = ${T_SEQ} с"
+
+echo ""
+echo "════════════════════════════════════════════════════════════"
+echo "  БЛОК 2: Масштабирование (ускорение и эффективность)"
+echo "════════════════════════════════════════════════════════════"
+
+NP_LIST="1 2 4 8 12 16 24"
+
+for NP in $NP_LIST; do
+    echo ""
+    echo "--- NP = ${NP} ---"
+    # Здесь убедись, что твоя life_mpi тоже принимает <файл> <итерации>
+    # Если MPI версия все еще принимает X Y, замени аргументы на $X $Y $MAX_ITER
+    if [ "$NP" -le 12 ]; then
+        mpirun -machinefile $PBS_NODEFILE -np $NP \
+            ./life_mpi $INPUT_FILE $MAX_ITER > result_np${NP}.txt 2>&1
+    else
+        mpirun -machinefile $PBS_NODEFILE -np $NP -perhost 12 \
+            ./life_mpi $INPUT_FILE $MAX_ITER > result_np${NP}.txt 2>&1
+    fi
+    cat result_np${NP}.txt
+done
+
+echo ""
+echo "════════════════════════════════════════════════════════════"
+echo "  Сводная таблица: ускорение и эффективность"
+echo "════════════════════════════════════════════════════════════"
+printf "%-4s | %-14s | %-12s | %-11s\n" "NP" "t_total (s)" "Ускорение S" "Эффект. E"
+printf -- "-----|----------------|--------------|------------\n"
+for NP in $NP_LIST; do
+    TT=$(grep "t_total" result_np${NP}.txt | awk '{print $3}')
+    if [ -n "$TT" ] && [ -n "$T_SEQ" ] && [ "$T_SEQ" != "0" ]; then
+        S=$(awk "BEGIN{printf \"%.4f\", ${T_SEQ}/${TT}}")
+        E=$(awk "BEGIN{printf \"%.4f\", ${S}/${NP}}")
+    else
+        S="-"; E="-"
+    fi
+    printf "%-4s | %-14s | %-12s | %-11s\n" "$NP" "${TT:--}" "$S" "$E"
+done
+
+echo ""
+echo "════════════════════════════════════════════════════════════"
+echo "  БЛОК 3: Профилирование с MPE (-mpilog), 16 процессов"
+echo "════════════════════════════════════════════════════════════"
+mpirun -machinefile $PBS_NODEFILE -np 16 -perhost 12 \
+    ./life_mpi_mpe $INPUT_FILE $MAX_ITER > profile_np16.txt 2>&1
+
+TT_P=$(grep "t_total" profile_np16.txt | awk '{print $3}')
+if [ -n "$TT_P" ] && [ -n "$T_SEQ" ]; then
+    S_P=$(awk "BEGIN{printf \"%.4f\", ${T_SEQ}/${TT_P}}")
+    E_P=$(awk "BEGIN{printf \"%.4f\", ${S_P}/16}")
+    echo "  Ускорение S(16) = ${S_P},  Эффективность E(16) = ${E_P}"
+fi
+
+# Сохранение лога MPE
+if [ -f life_mpi_mpe.clog2 ]; then
+    mv life_mpi_mpe.clog2 profile_np16.clog2
+elif [ -f *.clog2 ]; then
+    mv *.clog2 profile_np16.clog2
+fi
+
+echo ""
+echo "=== Готово ==="
+echo "Итоговое поле сохранено в output.txt (от последнего запуска)"
+echo "Просмотр профиля: jumpshot profile_np16.clog2"

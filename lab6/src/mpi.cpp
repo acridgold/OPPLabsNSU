@@ -13,7 +13,7 @@ static constexpr int NUM_ITER = 10;
 enum Tags
 {
     TAG_REQUEST = 1, TAG_REPLY, TAG_DATA,
-    TAG_STOP_REPORT, TAG_BUSY_REPORT, TAG_FINAL_STOP
+    TAG_WITHOUT_WORK_REPORT, TAG_BUSY_REPORT, TAG_FINAL_STOP
 };
 
 typedef struct
@@ -27,21 +27,20 @@ typedef struct
     int rank, size;
     Task* tasks;
     int taskCount;
-    int front;
+    int nextTaskId;
     pthread_mutex_t mu;
     double globalRes;
     int doneTasks;
-    int workerIdle;
-    int iterDone;
-    int reported_idle;
-    int idle_count;
+    bool workerHasNoWork;
+    bool isIterDone;
+    bool hasSendNoWorkMessage;
+    int rank0_withoutWork_count;
     pthread_cond_t cvWorker;
 } State;
 
 typedef struct
 {
     State* st;
-    int iter;
 } Args;
 
 static int task_weight(int i, int iter, int size)
@@ -57,14 +56,14 @@ static void* worker_thread(void* arg)
     while (true)
     {
         pthread_mutex_lock(&st->mu);
-        while (st->front >= st->taskCount && !st->iterDone)
+        while (st->nextTaskId >= st->taskCount && !st->isIterDone)
             pthread_cond_wait(&st->cvWorker, &st->mu);
-        if (st->iterDone && st->front >= st->taskCount)
+        if (st->isIterDone && st->nextTaskId >= st->taskCount)
         {
             pthread_mutex_unlock(&st->mu);
             break;
         }
-        Task t = st->tasks[st->front++];
+        Task t = st->tasks[st->nextTaskId++];
         pthread_mutex_unlock(&st->mu);
 
         double res = 0.0;
@@ -73,7 +72,7 @@ static void* worker_thread(void* arg)
         pthread_mutex_lock(&st->mu);
         st->globalRes += res;
         st->doneTasks++;
-        if (st->front >= st->taskCount) st->workerIdle = 1;
+        if (st->nextTaskId >= st->taskCount) st->workerHasNoWork = true;
         pthread_mutex_unlock(&st->mu);
     }
     return NULL;
@@ -86,10 +85,10 @@ static void handle_requests(State* st)
     while (MPI_Iprobe(MPI_ANY_SOURCE, TAG_REQUEST, MPI_COMM_WORLD, &flag, &status), flag)
     {
         int src = status.MPI_SOURCE;
-        int dummy;
-        MPI_Recv(&dummy, 1, MPI_INT, src, TAG_REQUEST, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        int trash_message;
+        MPI_Recv(&trash_message, 1, MPI_INT, src, TAG_REQUEST, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
         pthread_mutex_lock(&st->mu);
-        int give = (st->taskCount - st->front) / 2;
+        int give = (st->taskCount - st->nextTaskId) / 2;
         if (give < 1) give = 0;
         MPI_Send(&give, 1, MPI_INT, src, TAG_REPLY, MPI_COMM_WORLD);
         if (give > 0)
@@ -100,19 +99,21 @@ static void handle_requests(State* st)
         }
         pthread_mutex_unlock(&st->mu);
     }
+
+    // На завершение
     if (st->rank == 0)
     {
-        while (MPI_Iprobe(MPI_ANY_SOURCE, TAG_STOP_REPORT, MPI_COMM_WORLD, &flag, &status), flag)
+        while (MPI_Iprobe(MPI_ANY_SOURCE, TAG_WITHOUT_WORK_REPORT, MPI_COMM_WORLD, &flag, &status), flag)
         {
             int d;
-            MPI_Recv(&d, 1, MPI_INT, status.MPI_SOURCE, TAG_STOP_REPORT, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-            st->idle_count++;
+            MPI_Recv(&d, 1, MPI_INT, status.MPI_SOURCE, TAG_WITHOUT_WORK_REPORT, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            st->rank0_withoutWork_count++;
         }
         while (MPI_Iprobe(MPI_ANY_SOURCE, TAG_BUSY_REPORT, MPI_COMM_WORLD, &flag, &status), flag)
         {
             int d;
             MPI_Recv(&d, 1, MPI_INT, status.MPI_SOURCE, TAG_BUSY_REPORT, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-            st->idle_count--;
+            st->rank0_withoutWork_count--;
         }
     }
     else if (MPI_Iprobe(0, TAG_FINAL_STOP, MPI_COMM_WORLD, &flag, &status), flag)
@@ -120,7 +121,7 @@ static void handle_requests(State* st)
         int d;
         MPI_Recv(&d, 1, MPI_INT, 0, TAG_FINAL_STOP, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
         pthread_mutex_lock(&st->mu);
-        st->iterDone = 1;
+        st->isIterDone = true;
         pthread_cond_signal(&st->cvWorker);
         pthread_mutex_unlock(&st->mu);
     }
@@ -129,39 +130,39 @@ static void handle_requests(State* st)
 static void* listener_thread(void* arg)
 {
     State* st = ((Args*)arg)->st;
-    while (1)
+    while (true)
     {
         handle_requests(st);
         pthread_mutex_lock(&st->mu);
-        if (st->iterDone)
+        if (st->isIterDone)
         {
             pthread_mutex_unlock(&st->mu);
             break;
         }
-        int idle = st->workerIdle;
+        bool workerHasNoWork = st->workerHasNoWork;
         pthread_mutex_unlock(&st->mu);
 
-        if (idle)
+        if (workerHasNoWork)
         {
             int success = 0;
             for (int i = 1; i < st->size && !success; i++)
             {
                 int target = (st->rank + i) % st->size;
-                int d = 0;
-                MPI_Send(&d, 1, MPI_INT, target, TAG_REQUEST, MPI_COMM_WORLD);
+                int trash_message = 0;
+                MPI_Send(&trash_message, 1, MPI_INT, target, TAG_REQUEST, MPI_COMM_WORLD);
                 int count = -1;
-                while (1)
+                while (true)
                 {
                     handle_requests(st);
-                    int f;
+                    int flag;
                     MPI_Status s;
-                    MPI_Iprobe(target, TAG_REPLY, MPI_COMM_WORLD, &f, &s);
-                    if (f)
+                    MPI_Iprobe(target, TAG_REPLY, MPI_COMM_WORLD, &flag, &s);
+                    if (flag)
                     {
                         MPI_Recv(&count, 1, MPI_INT, target, TAG_REPLY, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
                         break;
                     }
-                    if (st->iterDone) break;
+                    if (st->isIterDone) break;
                     usleep(500);
                 }
                 if (count > 0)
@@ -170,40 +171,42 @@ static void* listener_thread(void* arg)
                     MPI_Recv(buf, count * (int)sizeof(Task), MPI_BYTE, target, TAG_DATA, MPI_COMM_WORLD,
                              MPI_STATUS_IGNORE);
                     pthread_mutex_lock(&st->mu);
-                    if (st->reported_idle && st->rank != 0)
+                    if (st->hasSendNoWorkMessage && st->rank != 0) // Будим поток если спали
                     {
                         int b = 1;
                         MPI_Send(&b, 1, MPI_INT, 0, TAG_BUSY_REPORT, MPI_COMM_WORLD);
-                        st->reported_idle = 0;
+                        st->hasSendNoWorkMessage = false;
                     }
                     st->tasks = (Task*)realloc(st->tasks, (size_t)(st->taskCount + count) * sizeof(Task));
                     memcpy(st->tasks + st->taskCount, buf, (size_t)count * sizeof(Task));
                     st->taskCount += count;
-                    st->workerIdle = 0;
+                    st->workerHasNoWork = false;
                     pthread_cond_signal(&st->cvWorker);
                     pthread_mutex_unlock(&st->mu);
                     free(buf);
                     success = 1;
                 }
-                if (st->iterDone) break;
+                if (st->isIterDone) break;
             }
-            if (!success && !st->iterDone)
+
+            // Если простаиваем
+            if (!success && !st->isIterDone)
             {
                 if (st->rank != 0)
                 {
-                    if (!st->reported_idle)
+                    if (!st->hasSendNoWorkMessage)
                     {
                         int s = 1;
-                        MPI_Send(&s, 1, MPI_INT, 0, TAG_STOP_REPORT, MPI_COMM_WORLD);
-                        st->reported_idle = 1;
+                        MPI_Send(&s, 1, MPI_INT, 0, TAG_WITHOUT_WORK_REPORT, MPI_COMM_WORLD);
+                        st->hasSendNoWorkMessage = true;
                     }
                 }
                 else
                 {
                     pthread_mutex_lock(&st->mu);
-                    if (st->idle_count == st->size - 1)
+                    if (st->rank0_withoutWork_count == st->size - 1)
                     {
-                        st->iterDone = 1;
+                        st->isIterDone = true;
                         pthread_cond_signal(&st->cvWorker);
                         for (int k = 1; k < st->size; k++)
                         {
@@ -244,13 +247,13 @@ int main(int argc, char** argv)
         if (st.tasks) free(st.tasks);
         st.tasks = (Task*)malloc((size_t)TASKS_PER_PROC * sizeof(Task));
         st.taskCount = TASKS_PER_PROC;
-        st.front = 0;
+        st.nextTaskId = 0;
         st.globalRes = 0.0;
         st.doneTasks = 0;
-        st.workerIdle = 0;
-        st.iterDone = 0;
-        st.reported_idle = 0;
-        st.idle_count = 0;
+        st.workerHasNoWork = false;
+        st.isIterDone = false;
+        st.hasSendNoWorkMessage = false;
+        st.rank0_withoutWork_count = 0;
         for (int i = 0; i < TASKS_PER_PROC; i++)
         {
             int gid = st.rank * TASKS_PER_PROC + i;
@@ -259,7 +262,7 @@ int main(int argc, char** argv)
         }
         pthread_mutex_unlock(&st.mu);
 
-        Args args = {&st, iter};
+        Args args = {&st};
         pthread_t wt, lt;
         pthread_create(&wt, NULL, worker_thread, &args);
         pthread_create(&lt, NULL, listener_thread, &args);
